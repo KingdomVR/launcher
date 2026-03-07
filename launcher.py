@@ -28,8 +28,8 @@ GITHUB_API_BASE = "https://api.github.com"
 APP_NAME = "KingdomVR"
 GAME_EXE = "kingdomvr.exe"
 
-# TEMPORARY DEBUG: Hardcode path to Desktop to bypass all sandboxing issues
-APPDATA_DIR = Path(r"C:\Users\LAPTOP\AppData\Roaming\KingdomVR")
+# All data lives under %APPDATA%\KingdomVR (no admin rights needed)
+APPDATA_DIR = Path(os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming")) / APP_NAME
 VERSIONS_DIR = APPDATA_DIR / "versions"
 DOWNLOADS_DIR = APPDATA_DIR / "downloads"
 CONFIG_FILE = APPDATA_DIR / "config.json"
