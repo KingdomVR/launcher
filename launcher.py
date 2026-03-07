@@ -15,6 +15,9 @@ import zipfile
 from pathlib import Path
 import tkinter as tk
 from tkinter import messagebox, ttk
+from PIL import Image, ImageTk
+import ctypes
+from ctypes import wintypes
 
 import requests
 
@@ -23,10 +26,10 @@ GITHUB_REPO = "KingdomVR/KingdomVR"
 GITHUB_API_BASE = "https://api.github.com"
 
 APP_NAME = "KingdomVR"
-GAME_EXE = "KingdomVR.exe"
+GAME_EXE = "kingdomvr.exe"
 
-# All data lives under %APPDATA%\KingdomVR (no admin rights needed)
-APPDATA_DIR = Path(os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming")) / APP_NAME
+# TEMPORARY DEBUG: Hardcode path to Desktop to bypass all sandboxing issues
+APPDATA_DIR = Path(r"C:\Users\LAPTOP\AppData\Roaming\KingdomVR")
 VERSIONS_DIR = APPDATA_DIR / "versions"
 DOWNLOADS_DIR = APPDATA_DIR / "downloads"
 CONFIG_FILE = APPDATA_DIR / "config.json"
@@ -38,7 +41,7 @@ WINDOW_H = 340
 # Colors used throughout the UI
 BG_DARK = "#1a1a2e"
 BG_CARD = "#16213e"
-ACCENT = "#e94560"
+ACCENT = "#4a90e2"
 TEXT_LIGHT = "#e0e0e0"
 TEXT_DIM = "#9090a0"
 
@@ -120,11 +123,7 @@ def extract_zip(zip_path: Path, dest_dir: Path) -> None:
 # ── Logo Canvas ───────────────────────────────────────────────────────────────
 
 def build_logo_canvas(parent: tk.Widget) -> tk.Canvas:
-    """Draw a placeholder logo.
-
-    Replace this function (or swap in an actual image) once the final
-    KingdomVR artwork is available.
-    """
+    """Display the KingdomVR logo image."""
     canvas = tk.Canvas(
         parent,
         width=WINDOW_W,
@@ -133,40 +132,44 @@ def build_logo_canvas(parent: tk.Widget) -> tk.Canvas:
         highlightthickness=0,
     )
 
-    cx, cy = WINDOW_W // 2, 80
-
-    # Outer glow ring
-    canvas.create_oval(cx - 62, cy - 62, cx + 62, cy + 62, outline="#e94560", width=2)
-
-    # Crown shape (simplified polygon)
-    crown_pts = [
-        cx - 40, cy + 20,
-        cx - 40, cy - 10,
-        cx - 25, cy + 5,
-        cx, cy - 30,
-        cx + 25, cy + 5,
-        cx + 40, cy - 10,
-        cx + 40, cy + 20,
-    ]
-    canvas.create_polygon(crown_pts, fill="#e94560", outline="#ff6b84", width=1)
-
-    # Jewels on the crown
-    for jx in (cx - 40, cx, cx + 40):
-        canvas.create_oval(jx - 5, cy - 15, jx + 5, cy - 5, fill="#ffffff", outline="")
-
-    # "KingdomVR" text below the crown
-    canvas.create_text(
-        cx, cy + 48,
-        text="KingdomVR",
-        font=("Arial", 22, "bold"),
-        fill=TEXT_LIGHT,
-    )
-    canvas.create_text(
-        cx, cy + 68,
-        text="Launcher",
-        font=("Arial", 11),
-        fill=TEXT_DIM,
-    )
+    # Load and display the logo image
+    try:
+        logo_path = Path(__file__).parent / "images" / "kingdomvr.ico"
+        img = Image.open(logo_path)
+        # Resize if needed (keeping aspect ratio)
+        img.thumbnail((120, 120), Image.Resampling.LANCZOS)
+        photo = ImageTk.PhotoImage(img)
+        
+        # Keep a reference to prevent garbage collection
+        canvas.image = photo
+        
+        # Center the image
+        cx = WINDOW_W // 2
+        canvas.create_image(cx, 60, image=photo)
+        
+        # "KingdomVR" text below the logo
+        canvas.create_text(
+            cx, 128,
+            text="KingdomVR",
+            font=("Arial", 22, "bold"),
+            fill=TEXT_LIGHT,
+        )
+        canvas.create_text(
+            cx, 148,
+            text="Launcher",
+            font=("Arial", 11),
+            fill=TEXT_DIM,
+        )
+    except Exception as e:
+        # Fallback: show text if image fails to load
+        canvas.create_text(
+            WINDOW_W // 2, 80,
+            text="KingdomVR\nLauncher",
+            font=("Arial", 22, "bold"),
+            fill=TEXT_LIGHT,
+            justify="center",
+        )
+    
     return canvas
 
 
@@ -179,6 +182,28 @@ class LauncherApp(tk.Tk):
         self.resizable(False, False)
         self.configure(bg=BG_DARK)
         self.geometry(f"{WINDOW_W}x{WINDOW_H}")
+        
+        # Set window icon
+        try:
+            icon_path = Path(__file__).parent / "images" / "kingdomvr.ico"
+            self.iconbitmap(str(icon_path))
+        except Exception:
+            pass  # Silently fail if icon can't be loaded
+        
+        # Enable dark mode title bar on Windows 10/11
+        try:
+            import ctypes as ct
+            hwnd = ct.windll.user32.GetParent(self.winfo_id())
+            value = ct.c_int(2)  # DWMWA_USE_IMMERSIVE_DARK_MODE = 20 (Windows 11) or 19 (Windows 10 builds)
+            # Try Windows 11 attribute first
+            ct.windll.dwmapi.DwmSetWindowAttribute(hwnd, 20, ct.byref(value), ct.sizeof(value))
+        except Exception:
+            try:
+                # Fall back to Windows 10 builds 19041+
+                ct.windll.dwmapi.DwmSetWindowAttribute(hwnd, 19, ct.byref(value), ct.sizeof(value))
+            except Exception:
+                pass  # Not on Windows or older version, just continue
+        
         self._center_window()
         self._build_ui()
 
@@ -237,7 +262,7 @@ class LauncherApp(tk.Tk):
             font=("Arial", 12, "bold"),
             bg=ACCENT,
             fg="white",
-            activebackground="#c73652",
+            activebackground="#3a7bc2",
             activeforeground="white",
             relief="flat",
             padx=20,
@@ -448,6 +473,16 @@ class LauncherApp(tk.Tk):
             return
 
         version_dir = VERSIONS_DIR / installed
+        
+        if not version_dir.exists():
+            messagebox.showerror(
+                "Directory Not Found",
+                f"Version directory does not exist:\n{version_dir}\n\n"
+                "The installation may be corrupted. Please re-launch to repair.",
+                parent=self,
+            )
+            return
+        
         exe_path = find_game_exe(version_dir)
 
         if exe_path is None or not exe_path.exists():
@@ -472,7 +507,23 @@ class LauncherApp(tk.Tk):
             )
             return
 
-        subprocess.Popen([str(exe_path)], cwd=str(exe_path.parent))
+        try:
+            subprocess.Popen(
+                [str(exe_path)],
+                cwd=str(exe_path.parent),
+                creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except Exception as e:
+            messagebox.showerror(
+                "Launch Failed",
+                f"Failed to launch game:\n{e}",
+                parent=self,
+            )
+            return
+            
         self.destroy()
 
 
