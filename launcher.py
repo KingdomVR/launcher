@@ -48,6 +48,17 @@ TEXT_DIM = "#9090a0"
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
+def get_resource_path(relative_path: str) -> Path:
+    """Get absolute path to resource, works for dev and for PyInstaller."""
+    try:
+        # PyInstaller creates a temp folder and stores path in _MEIPASS
+        base_path = Path(sys._MEIPASS)
+    except AttributeError:
+        # Running in normal Python environment
+        base_path = Path(__file__).parent
+    return base_path / relative_path
+
+
 def ensure_dirs() -> None:
     """Create the AppData directories if they do not already exist."""
     for d in (APPDATA_DIR, VERSIONS_DIR, DOWNLOADS_DIR):
@@ -134,7 +145,7 @@ def build_logo_canvas(parent: tk.Widget) -> tk.Canvas:
 
     # Load and display the logo image
     try:
-        logo_path = Path(__file__).parent / "images" / "kingdomvr.ico"
+        logo_path = get_resource_path("images/kingdomvr.ico")
         img = Image.open(logo_path)
         # Resize if needed (keeping aspect ratio)
         img.thumbnail((120, 120), Image.Resampling.LANCZOS)
@@ -185,7 +196,7 @@ class LauncherApp(tk.Tk):
         
         # Set window icon
         try:
-            icon_path = Path(__file__).parent / "images" / "kingdomvr.ico"
+            icon_path = get_resource_path("images/kingdomvr.ico")
             self.iconbitmap(str(icon_path))
         except Exception:
             pass  # Silently fail if icon can't be loaded
@@ -530,6 +541,15 @@ class LauncherApp(tk.Tk):
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
+    # Fix Windows taskbar icon BEFORE creating any windows
+    if sys.platform == "win32":
+        try:
+            # Set a unique AppUserModelID so Windows doesn't group with Python
+            myappid = 'kingdomvr.launcher.1.0'
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
+        except Exception:
+            pass
+    
     if sys.platform != "win32":
         # Warn but still allow running (useful for development on other platforms)
         print(
