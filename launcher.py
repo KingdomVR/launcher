@@ -8,8 +8,10 @@ the game executable. No administrator privileges are required.
 
 import json
 import os
+import re
 import subprocess
 import sys
+import tempfile
 import threading
 import zipfile
 from pathlib import Path
@@ -23,10 +25,12 @@ import requests
 
 # ── Configuration ─────────────────────────────────────────────────────────────
 GITHUB_REPO = "KingdomVR/KingdomVR"
+LAUNCHER_GITHUB_REPO = "KingdomVR/launcher"
 GITHUB_API_BASE = "https://api.github.com"
 
 APP_NAME = "KingdomVR"
 GAME_EXE = "kingdomvr.exe"
+LAUNCHER_VERSION = "1.1"
 
 # All data lives under %APPDATA%\KingdomVR (no admin rights needed)
 APPDATA_DIR = Path(os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming")) / APP_NAME
@@ -67,13 +71,23 @@ def ensure_dirs() -> None:
 
 def load_config() -> dict:
     """Return the persisted launcher config, or a default dict."""
+    default_config = {
+        "installed_version": None,
+        "launcher_version": LAUNCHER_VERSION,
+    }
+
     if CONFIG_FILE.exists():
         try:
             with open(CONFIG_FILE, "r", encoding="utf-8") as fh:
-                return json.load(fh)
+                data = json.load(fh)
+                if not isinstance(data, dict):
+                    return default_config.copy()
+                data.setdefault("installed_version", None)
+                data.setdefault("launcher_version", LAUNCHER_VERSION)
+                return data
         except (json.JSONDecodeError, OSError):
             pass
-    return {"installed_version": None}
+    return default_config.copy()
 
 
 def save_config(config: dict) -> None:
@@ -85,6 +99,17 @@ def get_installed_version() -> str | None:
     return load_config().get("installed_version")
 
 
+def parse_version_tuple(version: str) -> tuple[int, ...]:
+    """Return a comparable numeric tuple for tags like v1.2.3 or 1.2."""
+    cleaned = version.strip().lstrip("vV")
+    parts = [int(p) for p in re.findall(r"\d+", cleaned)]
+    return tuple(parts) if parts else (0,)
+
+
+def is_version_newer(candidate: str, current: str) -> bool:
+    return parse_version_tuple(candidate) > parse_version_tuple(current)
+
+
 def find_game_exe(version_dir: Path) -> Path | None:
     """Search *version_dir* recursively for KingdomVR.exe."""
     for path in version_dir.rglob(GAME_EXE):
@@ -92,9 +117,9 @@ def find_game_exe(version_dir: Path) -> Path | None:
     return None
 
 
-def get_latest_release() -> dict:
+def get_latest_release(repo: str) -> dict:
     """Fetch the latest release from the GitHub API (raises on failure)."""
-    url = f"{GITHUB_API_BASE}/repos/{GITHUB_REPO}/releases/latest"
+    url = f"{GITHUB_API_BASE}/repos/{repo}/releases/latest"
     resp = requests.get(url, timeout=15)
     resp.raise_for_status()
     return resp.json()
@@ -106,6 +131,30 @@ def find_windows_asset(release: dict) -> tuple:
         name: str = asset.get("name", "")
         if name.startswith("KingdomVR-v") and name.endswith("-windows.zip"):
             return name, asset["browser_download_url"]
+    return None, None
+
+
+def find_launcher_installer_asset(release: dict) -> tuple:
+    """Return (asset_name, download_url) for a Windows launcher installer."""
+    assets = release.get("assets", [])
+
+    # Prefer common installer naming first, then any .exe, then .msi.
+    for asset in assets:
+        name = asset.get("name", "")
+        lower = name.lower()
+        if lower.endswith(".exe") and any(k in lower for k in ("setup", "installer")):
+            return name, asset["browser_download_url"]
+
+    for asset in assets:
+        name = asset.get("name", "")
+        if name.lower().endswith(".exe"):
+            return name, asset["browser_download_url"]
+
+    for asset in assets:
+        name = asset.get("name", "")
+        if name.lower().endswith(".msi"):
+            return name, asset["browser_download_url"]
+
     return None, None
 
 
@@ -328,11 +377,14 @@ class LauncherApp(tk.Tk):
     # ── Update-check logic (runs on background thread) ────────────────────────
 
     def _check_for_updates(self) -> None:
+        if self._handle_launcher_self_update():
+            return
+
         installed = get_installed_version()
 
         try:
-            self._set_status("Checking for updates…")
-            release = get_latest_release()
+            self._set_status("Checking for KingdomVR updates…")
+            release = get_latest_release(GITHUB_REPO)
         except (requests.RequestException, OSError) as exc:  # network / HTTP errors
             self._stop_progress()
             if installed:
@@ -410,6 +462,104 @@ class LauncherApp(tk.Tk):
             self._set_status(f"Skipping update. Running version {installed}.")
             self._set_version_label(f"Version: {installed}")
             self._enable_launch()
+
+    def _handle_launcher_self_update(self) -> bool:
+        """Return True if self-update flow took over and app should stop normal flow."""
+        self._set_status("Checking launcher updates…")
+
+        # Ensure the running launcher version is tracked in config.
+        cfg = load_config()
+        if cfg.get("launcher_version") != LAUNCHER_VERSION:
+            cfg["launcher_version"] = LAUNCHER_VERSION
+            save_config(cfg)
+
+        try:
+            launcher_release = get_latest_release(LAUNCHER_GITHUB_REPO)
+        except (requests.RequestException, OSError):
+            # If the launcher version cannot be checked, continue with game checks.
+            return False
+
+        latest_launcher_tag = (launcher_release.get("tag_name") or "").strip()
+        if not latest_launcher_tag:
+            return False
+
+        if not is_version_newer(latest_launcher_tag, LAUNCHER_VERSION):
+            return False
+
+        installer_name, installer_url = find_launcher_installer_asset(launcher_release)
+        if not installer_url:
+            self._stop_progress()
+            self._show_error(
+                "Launcher Update Required",
+                "A newer launcher version is available, but no Windows installer "
+                "asset was found in the latest launcher release.\n\n"
+                "Please download the newest launcher manually from "
+                "https://github.com/KingdomVR/launcher/releases/latest",
+            )
+            self.after(0, self.destroy)
+            return True
+
+        self._stop_progress()
+        proceed = self._ask(
+            "Launcher Update Required",
+            "A new KingdomVR Launcher version is available and must be installed "
+            "before launching KingdomVR.\n\n"
+            f"Current launcher: {LAUNCHER_VERSION}\n"
+            f"Required launcher: {latest_launcher_tag}\n\n"
+            "Download and run the new launcher installer now?",
+        )
+        if not proceed:
+            self.after(0, self.destroy)
+            return True
+
+        self._download_and_run_launcher_installer(
+            latest_launcher_tag,
+            installer_url,
+            installer_name,
+        )
+        return True
+
+    def _download_and_run_launcher_installer(self, tag: str, url: str, asset_name: str) -> None:
+        temp_dir = Path(tempfile.gettempdir()) / "KingdomVRLauncher" / "updates"
+        installer_dest = temp_dir / asset_name
+
+        try:
+            self._set_status("Preparing launcher update download…")
+            self.after(0, lambda: self._progress.configure(mode="indeterminate"))
+            self.after(0, lambda: self._progress.start(10))
+
+            first_byte = threading.Event()
+
+            def _progress_cb(fraction: float) -> None:
+                if not first_byte.is_set():
+                    first_byte.set()
+                    self.after(0, lambda: self._progress.stop())
+                self._set_progress(fraction)
+                self._set_status(f"Downloading launcher update {asset_name}… {int(fraction * 100)}%")
+
+            download_file(url, installer_dest, _progress_cb)
+
+            self._set_status(f"Opening launcher installer {tag}…")
+            self._launch_detached(installer_dest)
+            self.after(0, self.destroy)
+        except (requests.RequestException, OSError, ValueError) as exc:
+            self._stop_progress()
+            self._show_error(
+                "Launcher Update Failed",
+                "Failed to download or launch the new launcher installer.\n\n"
+                f"{exc}",
+            )
+            self.after(0, self.destroy)
+
+    def _launch_detached(self, executable_path: Path) -> None:
+        subprocess.Popen(
+            [str(executable_path)],
+            cwd=str(executable_path.parent),
+            creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
 
     # ── Download / install (runs on background thread) ────────────────────────
 
@@ -519,14 +669,7 @@ class LauncherApp(tk.Tk):
             return
 
         try:
-            subprocess.Popen(
-                [str(exe_path)],
-                cwd=str(exe_path.parent),
-                creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
+            self._launch_detached(exe_path)
         except Exception as e:
             messagebox.showerror(
                 "Launch Failed",

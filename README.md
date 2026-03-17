@@ -1,12 +1,15 @@
 # KingdomVR Launcher
 
-A Python GUI launcher for the KingdomVR client. On startup it automatically
-checks GitHub for the latest release, prompts the user to download and install
-it if needed, then launches the game.
+A Python GUI launcher for the KingdomVR client. On startup it first checks for
+a newer launcher release, updates itself if required, then checks GitHub for
+the latest KingdomVR release, prompts the user to download and install it if
+needed, and finally launches the game.
 
 ## Features
 
 - **Auto-update check** – queries the GitHub Releases API on every launch.
+- **Launcher self-update (required)** – checks `KingdomVR/launcher` first and
+  requires installing the latest launcher before running KingdomVR.
 - **First-run install** – prompts the user to download the game if no version
   is present yet.
 - **Optional update** – if an update is available the user can choose to
@@ -35,7 +38,7 @@ python launcher.py
 
 ```
 %APPDATA%\KingdomVR\
-├── config.json            # tracks the currently installed version tag
+├── config.json            # tracks game + launcher versions
 ├── downloads\             # temporary zip files (cleaned up after install)
 └── versions\
     └── v1.0\              # extracted game files for each installed version
@@ -60,4 +63,6 @@ GitHub repository or change the expected exe / zip naming:
 | Constant | Default | Purpose |
 |---|---|---|
 | `GITHUB_REPO` | `KingdomVR/KingdomVR` | Owner/repo for release checks |
+| `LAUNCHER_GITHUB_REPO` | `KingdomVR/launcher` | Owner/repo for launcher self-updates |
+| `LAUNCHER_VERSION` | `1.0.0` | Current launcher version used for self-update comparison |
 | `GAME_EXE` | `KingdomVR.exe` | Executable name to launch |
