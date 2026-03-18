@@ -14,6 +14,7 @@ import sys
 import tempfile
 import threading
 import zipfile
+import shutil
 from pathlib import Path
 import tkinter as tk
 from tkinter import messagebox, ttk
@@ -313,7 +314,23 @@ class LauncherApp(tk.Tk):
         self._version_label = tk.Label(
             btn_frame, text="", font=("Arial", 9), fg=TEXT_DIM, bg=BG_DARK
         )
+
+        # Version label and About link inline (show KingdomVR version and About)
         self._version_label.pack(side="left")
+
+        sep = tk.Label(btn_frame, text=" | ", font=("Arial", 9), fg=TEXT_DIM, bg=BG_DARK)
+        sep.pack(side="left", padx=(6, 0))
+
+        self._about_link = tk.Label(
+            btn_frame,
+            text="About",
+            font=("Arial", 9, "underline"),
+            fg=ACCENT,
+            bg=BG_DARK,
+            cursor="hand2",
+        )
+        self._about_link.pack(side="left")
+        self._about_link.bind("<Button-1>", lambda e: self._open_about())
 
         self._launch_btn = tk.Button(
             btn_frame,
@@ -679,6 +696,134 @@ class LauncherApp(tk.Tk):
             return
             
         self.destroy()
+
+    # ── About / Vehicles Fix ─────────────────────────────────────────────────
+
+    def _open_about(self) -> None:
+        """Open a small About window with versions and the vehicles-fix action."""
+        installed = get_installed_version() or "(not installed)"
+
+        about = tk.Toplevel(self)
+        about.title("About")
+        about.resizable(False, False)
+        about.configure(bg=BG_DARK)
+
+        # Set same icon as main window so the Toplevel shows the correct mini-icon
+        try:
+            icon_path = get_resource_path("images/kingdomvr.ico")
+            about.iconbitmap(str(icon_path))
+        except Exception:
+            pass
+
+        # Try to enable immersive dark title bar on Windows for the about window too
+        try:
+            import ctypes as ct
+            hwnd = ct.windll.user32.GetParent(about.winfo_id())
+            value = ct.c_int(2)
+            try:
+                ct.windll.dwmapi.DwmSetWindowAttribute(hwnd, 20, ct.byref(value), ct.sizeof(value))
+            except Exception:
+                try:
+                    ct.windll.dwmapi.DwmSetWindowAttribute(hwnd, 19, ct.byref(value), ct.sizeof(value))
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        pad = dict(padx=14, pady=8)
+        tk.Label(
+            about,
+            text=f"Launcher version: {LAUNCHER_VERSION}",
+            fg=TEXT_LIGHT,
+            bg=BG_DARK,
+            font=("Arial", 10, "bold"),
+        ).pack(**pad)
+
+        tk.Label(
+            about,
+            text=f"Installed KingdomVR: {installed}",
+            fg=TEXT_LIGHT,
+            bg=BG_DARK,
+            font=("Arial", 10),
+        ).pack(**pad)
+
+        btn = tk.Button(
+            about,
+            text="Apply vehicles fix",
+            font=("Arial", 10),
+            bg=ACCENT,
+            fg="white",
+            activebackground="#3a7bc2",
+            relief="flat",
+            padx=12,
+            pady=6,
+            cursor="hand2",
+            command=lambda: threading.Thread(target=self._apply_vehicles_fix, args=(about,), daemon=True).start(),
+        )
+        btn.pack(pady=(6, 12))
+
+    def _apply_vehicles_fix(self, parent_window: tk.Widget | None = None) -> None:
+        """Download vehicles.zip, extract, and move .bmesh/.basis into Cyberspace resources."""
+        url = "https://github.com/KingdomVR/vehicles/releases/download/v1.0/vehicles.zip"
+
+        try:
+            self._set_status("Downloading vehicles fix…")
+
+            temp_dir = Path(tempfile.gettempdir()) / "KingdomVR" / "vehicles_fix"
+            if temp_dir.exists():
+                try:
+                    shutil.rmtree(temp_dir)
+                except Exception:
+                    pass
+            temp_dir.mkdir(parents=True, exist_ok=True)
+
+            zip_dest = temp_dir / "vehicles.zip"
+
+            def _progress_cb(fraction: float) -> None:
+                # update a lightweight progress indicator
+                try:
+                    self._set_progress(fraction)
+                except Exception:
+                    pass
+
+            download_file(url, zip_dest, _progress_cb)
+
+            self._set_status("Extracting vehicles fix…")
+            extract_dir = temp_dir / "extracted"
+            extract_zip(zip_dest, extract_dir)
+
+            dest_dir = Path(os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming")) / "Cyberspace" / "resources"
+            dest_dir.mkdir(parents=True, exist_ok=True)
+
+            moved = 0
+            for p in extract_dir.rglob("*"):
+                if p.is_file() and p.suffix.lower() in (".bmesh", ".basis"):
+                    dest = dest_dir / p.name
+                    try:
+                        shutil.copy2(p, dest)
+                        moved += 1
+                    except Exception as ex:
+                        # attempt to replace using os.replace as a fallback
+                        try:
+                            tmp = dest.with_suffix(dest.suffix + ".tmp")
+                            shutil.copy2(p, tmp)
+                            os.replace(tmp, dest)
+                            moved += 1
+                        except Exception:
+                            raise ex
+
+            # Clean up temp
+            try:
+                shutil.rmtree(temp_dir)
+            except Exception:
+                pass
+
+            messagebox.showinfo("Vehicles Fix", f"Vehicles fix applied. {moved} files updated.", parent=self)
+            self._set_status("Vehicles fix applied.")
+
+        except Exception as exc:
+            self._stop_progress()
+            self._show_error("Vehicles Fix Failed", str(exc))
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
