@@ -31,7 +31,7 @@ GITHUB_API_BASE = "https://api.github.com"
 
 APP_NAME = "KingdomVR"
 GAME_EXE = "kingdomvr.exe"
-LAUNCHER_VERSION = "1.1"
+LAUNCHER_VERSION = "1.2"
 
 # All data lives under %APPDATA%\KingdomVR (no admin rights needed)
 APPDATA_DIR = Path(os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming")) / APP_NAME
