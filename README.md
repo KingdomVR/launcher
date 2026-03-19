@@ -9,15 +9,16 @@ needed, and finally launches the game.
 
 - **Auto-update check** – queries the GitHub Releases API on every launch.
 - **Launcher self-update (required)** – checks `KingdomVR/launcher` first and
-  requires installing the latest launcher before running KingdomVR.
+  requires installing the latest launcher before running KingdomVR (Windows
+  via installer asset, macOS via zip replacement of the app bundle).
 - **First-run install** – prompts the user to download the game if no version
   is present yet.
 - **Optional update** – if an update is available the user can choose to
   install it or skip and run the existing version.
 - **Progress bar** – shows download progress while fetching the release zip.
-- **AppData storage** – all files (versions, config) are written to
-  `%APPDATA%\KingdomVR\` so no administrator privileges are needed.
-- **Windows-only** – designed to run KingdomVR on Windows.
+- **Platform-specific storage** – Windows uses `%APPDATA%\KingdomVR\`; macOS
+  uses `~/Library/Application Support/KingdomVR/`.
+- **Cross-platform launcher** – supports Windows and macOS release installs.
 
 ## Requirements
 
@@ -45,15 +46,27 @@ python launcher.py
         └── KingdomVR.exe
 ```
 
+## macOS data layout
+
+```
+~/Library/Application Support/KingdomVR/
+├── config.json                    # tracks game + launcher versions
+├── downloads/                     # temporary zip files (cleaned up after install)
+└── versions/
+    └── v1.0/                      # extracted game files for each installed version
+        └── KingdomVR.app
+```
+
 ## Release asset naming
 
-The launcher expects the Windows release asset on GitHub to follow the pattern:
+The launcher expects release assets to follow platform conventions:
 
 ```
 KingdomVR-v<major>.<minor>-windows.zip
+KingdomVR-v<major>.<minor>-macos.zip
 ```
 
-For example: `KingdomVR-v1.0-windows.zip`
+For example: `KingdomVR-v1.0-windows.zip` and `KingdomVR-v1.0-macos.zip`
 
 ## Configuration
 

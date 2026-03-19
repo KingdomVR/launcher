@@ -9,6 +9,7 @@ the game executable. No administrator privileges are required.
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -31,13 +32,24 @@ GITHUB_API_BASE = "https://api.github.com"
 
 APP_NAME = "KingdomVR"
 GAME_EXE = "kingdomvr.exe"
+GAME_APP = "KingdomVR.app"
 LAUNCHER_VERSION = "1.2"
 
-# All data lives under %APPDATA%\KingdomVR (no admin rights needed)
-APPDATA_DIR = Path(os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming")) / APP_NAME
-VERSIONS_DIR = APPDATA_DIR / "versions"
-DOWNLOADS_DIR = APPDATA_DIR / "downloads"
-CONFIG_FILE = APPDATA_DIR / "config.json"
+IS_WINDOWS = sys.platform == "win32"
+IS_MACOS = sys.platform == "darwin"
+
+# Platform-specific directories
+if IS_MACOS:
+    APP_ROOT_DIR = Path.home() / "Library" / "Application Support" / APP_NAME
+    LEGACY_MAC_ROOT_DIR = Path.home() / "Applications" / APP_NAME
+else:
+    # All data lives under %APPDATA%\KingdomVR on Windows (no admin rights needed)
+    APP_ROOT_DIR = Path(os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming")) / APP_NAME
+    LEGACY_MAC_ROOT_DIR = None
+
+VERSIONS_DIR = APP_ROOT_DIR / "versions"
+DOWNLOADS_DIR = APP_ROOT_DIR / "downloads"
+CONFIG_FILE = APP_ROOT_DIR / "config.json"
 
 # Window dimensions
 WINDOW_W = 500
@@ -65,9 +77,30 @@ def get_resource_path(relative_path: str) -> Path:
 
 
 def ensure_dirs() -> None:
-    """Create the AppData directories if they do not already exist."""
-    for d in (APPDATA_DIR, VERSIONS_DIR, DOWNLOADS_DIR):
+    """Create launcher directories if they do not already exist."""
+    for d in (APP_ROOT_DIR, VERSIONS_DIR, DOWNLOADS_DIR):
         d.mkdir(parents=True, exist_ok=True)
+
+    # Migrate older macOS data from ~/Applications/KingdomVR into
+    # ~/Library/Application Support/KingdomVR.
+    if IS_MACOS and LEGACY_MAC_ROOT_DIR and LEGACY_MAC_ROOT_DIR.exists():
+        for name in ("config.json", "versions", "downloads"):
+            legacy_path = LEGACY_MAC_ROOT_DIR / name
+            new_path = APP_ROOT_DIR / name
+            if legacy_path.exists() and not new_path.exists():
+                try:
+                    legacy_path.replace(new_path)
+                except OSError:
+                    # Fall back to copy in case cross-volume rename fails.
+                    try:
+                        if legacy_path.is_dir():
+                            shutil.copytree(legacy_path, new_path)
+                            shutil.rmtree(legacy_path)
+                        else:
+                            shutil.copy2(legacy_path, new_path)
+                            legacy_path.unlink()
+                    except OSError:
+                        pass
 
 
 def load_config() -> dict:
@@ -118,6 +151,13 @@ def find_game_exe(version_dir: Path) -> Path | None:
     return None
 
 
+def find_game_app(version_dir: Path) -> Path | None:
+    """Search *version_dir* recursively for KingdomVR.app."""
+    for path in version_dir.rglob(GAME_APP):
+        return path
+    return None
+
+
 def get_latest_release(repo: str) -> dict:
     """Fetch the latest release from the GitHub API (raises on failure)."""
     url = f"{GITHUB_API_BASE}/repos/{repo}/releases/latest"
@@ -133,6 +173,29 @@ def find_windows_asset(release: dict) -> tuple:
         if name.startswith("KingdomVR-v") and name.endswith("-windows.zip"):
             return name, asset["browser_download_url"]
     return None, None
+
+
+def find_macos_asset(release: dict) -> tuple:
+    """Return (asset_name, download_url) for the macOS zip, or (None, None)."""
+    for asset in release.get("assets", []):
+        name: str = asset.get("name", "")
+        lower = name.lower()
+        if name.startswith("KingdomVR-v") and (lower.endswith("-macos.zip") or lower.endswith("-mac.zip")):
+            return name, asset["browser_download_url"]
+
+    # Fallback to any zip that appears to target macOS.
+    for asset in release.get("assets", []):
+        name: str = asset.get("name", "")
+        lower = name.lower()
+        if lower.endswith(".zip") and any(token in lower for token in ("mac", "macos", "osx", "darwin")):
+            return name, asset["browser_download_url"]
+    return None, None
+
+
+def find_platform_asset(release: dict) -> tuple:
+    if IS_MACOS:
+        return find_macos_asset(release)
+    return find_windows_asset(release)
 
 
 def find_launcher_installer_asset(release: dict) -> tuple:
@@ -157,6 +220,51 @@ def find_launcher_installer_asset(release: dict) -> tuple:
             return name, asset["browser_download_url"]
 
     return None, None
+
+
+def find_launcher_macos_asset(release: dict) -> tuple:
+    """Return (asset_name, download_url) for a macOS launcher update archive."""
+    assets = release.get("assets", [])
+
+    # Prefer explicit launcher + mac zip names first.
+    for asset in assets:
+        name = asset.get("name", "")
+        lower = name.lower()
+        if (
+            lower.endswith(".zip")
+            and "launcher" in lower
+            and any(token in lower for token in ("mac", "macos", "osx", "darwin"))
+        ):
+            return name, asset["browser_download_url"]
+
+    # Fallback to any mac zip.
+    for asset in assets:
+        name = asset.get("name", "")
+        lower = name.lower()
+        if lower.endswith(".zip") and any(token in lower for token in ("mac", "macos", "osx", "darwin")):
+            return name, asset["browser_download_url"]
+
+    return None, None
+
+
+def find_launcher_update_asset(release: dict) -> tuple:
+    if IS_MACOS:
+        return find_launcher_macos_asset(release)
+    return find_launcher_installer_asset(release)
+
+
+def get_current_launcher_path() -> Path:
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve()
+    return Path(__file__).resolve()
+
+
+def get_current_macos_app_bundle() -> Path | None:
+    current = get_current_launcher_path()
+    for parent in (current, *current.parents):
+        if parent.suffix.lower() == ".app":
+            return parent
+    return None
 
 
 def download_file(url: str, dest: Path, progress_cb) -> None:
@@ -252,18 +360,19 @@ class LauncherApp(tk.Tk):
             pass  # Silently fail if icon can't be loaded
         
         # Enable dark mode title bar on Windows 10/11
-        try:
-            import ctypes as ct
-            hwnd = ct.windll.user32.GetParent(self.winfo_id())
-            value = ct.c_int(2)  # DWMWA_USE_IMMERSIVE_DARK_MODE = 20 (Windows 11) or 19 (Windows 10 builds)
-            # Try Windows 11 attribute first
-            ct.windll.dwmapi.DwmSetWindowAttribute(hwnd, 20, ct.byref(value), ct.sizeof(value))
-        except Exception:
+        if IS_WINDOWS:
             try:
-                # Fall back to Windows 10 builds 19041+
-                ct.windll.dwmapi.DwmSetWindowAttribute(hwnd, 19, ct.byref(value), ct.sizeof(value))
+                import ctypes as ct
+                hwnd = ct.windll.user32.GetParent(self.winfo_id())
+                value = ct.c_int(2)  # DWMWA_USE_IMMERSIVE_DARK_MODE = 20 (Windows 11) or 19 (Windows 10 builds)
+                # Try Windows 11 attribute first
+                ct.windll.dwmapi.DwmSetWindowAttribute(hwnd, 20, ct.byref(value), ct.sizeof(value))
             except Exception:
-                pass  # Not on Windows or older version, just continue
+                try:
+                    # Fall back to Windows 10 builds 19041+
+                    ct.windll.dwmapi.DwmSetWindowAttribute(hwnd, 19, ct.byref(value), ct.sizeof(value))
+                except Exception:
+                    pass  # Not on Windows or older version, just continue
         
         self._center_window()
         self._build_ui()
@@ -422,13 +531,13 @@ class LauncherApp(tk.Tk):
             return
 
         latest_tag: str = release.get("tag_name", "")
-        asset_name, download_url = find_windows_asset(release)
+        asset_name, download_url = find_platform_asset(release)
 
         if not download_url:
             self._stop_progress()
             if installed:
                 self._set_status(
-                    "No Windows release asset found on GitHub. "
+                    "No compatible release asset found on GitHub. "
                     "Launching the installed version."
                 )
                 self._set_version_label(f"Installed: {installed}")
@@ -436,7 +545,7 @@ class LauncherApp(tk.Tk):
             else:
                 self._show_error(
                     "No Asset Found",
-                    "The latest GitHub release has no Windows zip. Cannot install.",
+                    "The latest GitHub release has no compatible zip for this platform. Cannot install.",
                 )
                 self.after(0, self.destroy)
             return
@@ -503,13 +612,13 @@ class LauncherApp(tk.Tk):
         if not is_version_newer(latest_launcher_tag, LAUNCHER_VERSION):
             return False
 
-        installer_name, installer_url = find_launcher_installer_asset(launcher_release)
-        if not installer_url:
+        update_asset_name, update_asset_url = find_launcher_update_asset(launcher_release)
+        if not update_asset_url:
             self._stop_progress()
             self._show_error(
                 "Launcher Update Required",
-                "A newer launcher version is available, but no Windows installer "
-                "asset was found in the latest launcher release.\n\n"
+                "A newer launcher version is available, but no compatible launcher "
+                "update asset was found in the latest launcher release.\n\n"
                 "Please download the newest launcher manually from "
                 "https://github.com/KingdomVR/launcher/releases/latest",
             )
@@ -523,17 +632,24 @@ class LauncherApp(tk.Tk):
             "before launching KingdomVR.\n\n"
             f"Current launcher: {LAUNCHER_VERSION}\n"
             f"Required launcher: {latest_launcher_tag}\n\n"
-            "Download and run the new launcher installer now?",
+            "Download and install the new launcher now?",
         )
         if not proceed:
             self.after(0, self.destroy)
             return True
 
-        self._download_and_run_launcher_installer(
-            latest_launcher_tag,
-            installer_url,
-            installer_name,
-        )
+        if IS_MACOS:
+            self._download_and_apply_launcher_update_macos(
+                latest_launcher_tag,
+                update_asset_url,
+                update_asset_name,
+            )
+        else:
+            self._download_and_run_launcher_installer(
+                latest_launcher_tag,
+                update_asset_url,
+                update_asset_name,
+            )
         return True
 
     def _download_and_run_launcher_installer(self, tag: str, url: str, asset_name: str) -> None:
@@ -568,14 +684,113 @@ class LauncherApp(tk.Tk):
             )
             self.after(0, self.destroy)
 
+    def _download_and_apply_launcher_update_macos(self, tag: str, url: str, asset_name: str) -> None:
+        temp_dir = Path(tempfile.gettempdir()) / "KingdomVRLauncher" / "updates"
+        download_dest = temp_dir / asset_name
+        extracted_dir = temp_dir / f"extracted-{tag}"
+
+        try:
+            self._set_status("Preparing launcher update download…")
+            self.after(0, lambda: self._progress.configure(mode="indeterminate"))
+            self.after(0, lambda: self._progress.start(10))
+
+            first_byte = threading.Event()
+
+            def _progress_cb(fraction: float) -> None:
+                if not first_byte.is_set():
+                    first_byte.set()
+                    self.after(0, lambda: self._progress.stop())
+                self._set_progress(fraction)
+                self._set_status(f"Downloading launcher update {asset_name}… {int(fraction * 100)}%")
+
+            download_file(url, download_dest, _progress_cb)
+
+            if not download_dest.name.lower().endswith(".zip"):
+                raise ValueError("macOS launcher updates must be provided as a .zip asset")
+
+            self._set_status("Extracting launcher update…")
+            extract_zip(download_dest, extracted_dir)
+
+            replacement_app = None
+            for app_path in extracted_dir.rglob("*.app"):
+                replacement_app = app_path
+                break
+            if replacement_app is None:
+                raise ValueError("No .app bundle found in launcher update archive")
+
+            current_app = get_current_macos_app_bundle()
+            if current_app is None:
+                raise ValueError("Current launcher is not running from a .app bundle")
+
+            script_path = temp_dir / "apply_launcher_update.sh"
+            script_text = "\n".join(
+                [
+                    "#!/bin/bash",
+                    "set -e",
+                    "sleep 1",
+                    f"TARGET={shlex.quote(str(current_app))}",
+                    f"SRC={shlex.quote(str(replacement_app))}",
+                    'TMP="$TARGET.__new"',
+                    'rm -rf "$TMP"',
+                    'cp -R "$SRC" "$TMP"',
+                    'rm -rf "$TARGET"',
+                    'mv "$TMP" "$TARGET"',
+                    'open -n "$TARGET"',
+                    'rm -f "$0"',
+                ]
+            )
+            script_path.write_text(script_text, encoding="utf-8")
+            script_path.chmod(0o700)
+
+            self._set_status(f"Applying launcher update {tag}…")
+            subprocess.Popen(
+                ["/bin/bash", str(script_path)],
+                cwd=str(temp_dir),
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+            self.after(0, self.destroy)
+        except (requests.RequestException, zipfile.BadZipFile, OSError, ValueError) as exc:
+            self._stop_progress()
+            self._show_error(
+                "Launcher Update Failed",
+                "Failed to download or apply the new launcher version.\n\n"
+                f"{exc}",
+            )
+            self.after(0, self.destroy)
+
     def _launch_detached(self, executable_path: Path) -> None:
+        if IS_WINDOWS:
+            subprocess.Popen(
+                [str(executable_path)],
+                cwd=str(executable_path.parent),
+                creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            return
+
         subprocess.Popen(
             [str(executable_path)],
             cwd=str(executable_path.parent),
-            creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+
+    def _launch_game_bundle(self, app_bundle_path: Path) -> None:
+        """Launch a macOS .app bundle in detached mode."""
+        subprocess.Popen(
+            ["open", "-n", str(app_bundle_path)],
+            cwd=str(app_bundle_path.parent),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
         )
 
     # ── Download / install (runs on background thread) ────────────────────────
@@ -661,39 +876,74 @@ class LauncherApp(tk.Tk):
             )
             return
         
-        exe_path = find_game_exe(version_dir)
+        if IS_MACOS:
+            app_path = find_game_app(version_dir)
 
-        if exe_path is None or not exe_path.exists():
-            messagebox.showerror(
-                "Executable Not Found",
-                f"Could not find {GAME_EXE} in:\n{version_dir}\n\n"
-                "The installation may be corrupted. Please re-launch to repair.",
-                parent=self,
-            )
-            return
+            if app_path is None or not app_path.exists():
+                messagebox.showerror(
+                    "Application Not Found",
+                    f"Could not find {GAME_APP} in:\n{version_dir}\n\n"
+                    "The installation may be corrupted. Please re-launch to repair.",
+                    parent=self,
+                )
+                return
 
-        # Ensure the resolved path stays within VERSIONS_DIR (prevent path traversal
-        # in case config.json is modified maliciously).
-        try:
-            exe_path.resolve().relative_to(VERSIONS_DIR.resolve())
-        except ValueError:
-            messagebox.showerror(
-                "Security Error",
-                "The game executable path is outside the expected install directory.\n"
-                "Please re-install KingdomVR.",
-                parent=self,
-            )
-            return
+            # Ensure the resolved path stays within VERSIONS_DIR (prevent path traversal
+            # in case config.json is modified maliciously).
+            try:
+                app_path.resolve().relative_to(VERSIONS_DIR.resolve())
+            except ValueError:
+                messagebox.showerror(
+                    "Security Error",
+                    "The game application path is outside the expected install directory.\n"
+                    "Please re-install KingdomVR.",
+                    parent=self,
+                )
+                return
 
-        try:
-            self._launch_detached(exe_path)
-        except Exception as e:
-            messagebox.showerror(
-                "Launch Failed",
-                f"Failed to launch game:\n{e}",
-                parent=self,
-            )
-            return
+            try:
+                self._launch_game_bundle(app_path)
+            except Exception as e:
+                messagebox.showerror(
+                    "Launch Failed",
+                    f"Failed to launch game:\n{e}",
+                    parent=self,
+                )
+                return
+        else:
+            exe_path = find_game_exe(version_dir)
+
+            if exe_path is None or not exe_path.exists():
+                messagebox.showerror(
+                    "Executable Not Found",
+                    f"Could not find {GAME_EXE} in:\n{version_dir}\n\n"
+                    "The installation may be corrupted. Please re-launch to repair.",
+                    parent=self,
+                )
+                return
+
+            # Ensure the resolved path stays within VERSIONS_DIR (prevent path traversal
+            # in case config.json is modified maliciously).
+            try:
+                exe_path.resolve().relative_to(VERSIONS_DIR.resolve())
+            except ValueError:
+                messagebox.showerror(
+                    "Security Error",
+                    "The game executable path is outside the expected install directory.\n"
+                    "Please re-install KingdomVR.",
+                    parent=self,
+                )
+                return
+
+            try:
+                self._launch_detached(exe_path)
+            except Exception as e:
+                messagebox.showerror(
+                    "Launch Failed",
+                    f"Failed to launch game:\n{e}",
+                    parent=self,
+                )
+                return
             
         self.destroy()
 
@@ -747,20 +997,21 @@ class LauncherApp(tk.Tk):
             font=("Arial", 10),
         ).pack(**pad)
 
-        btn = tk.Button(
-            about,
-            text="Apply vehicles fix",
-            font=("Arial", 10),
-            bg=ACCENT,
-            fg="white",
-            activebackground="#3a7bc2",
-            relief="flat",
-            padx=12,
-            pady=6,
-            cursor="hand2",
-            command=lambda: threading.Thread(target=self._apply_vehicles_fix, args=(about,), daemon=True).start(),
-        )
-        btn.pack(pady=(6, 12))
+        if IS_WINDOWS:
+            btn = tk.Button(
+                about,
+                text="Apply vehicles fix",
+                font=("Arial", 10),
+                bg=ACCENT,
+                fg="white",
+                activebackground="#3a7bc2",
+                relief="flat",
+                padx=12,
+                pady=6,
+                cursor="hand2",
+                command=lambda: threading.Thread(target=self._apply_vehicles_fix, args=(about,), daemon=True).start(),
+            )
+            btn.pack(pady=(6, 12))
 
     def _apply_vehicles_fix(self, parent_window: tk.Widget | None = None) -> None:
         """Download vehicles.zip, extract, and move .bmesh/.basis into Cyberspace resources."""
@@ -838,10 +1089,10 @@ if __name__ == "__main__":
         except Exception:
             pass
     
-    if sys.platform != "win32":
+    if not (IS_WINDOWS or IS_MACOS):
         # Warn but still allow running (useful for development on other platforms)
         print(
-            "Warning: KingdomVR Launcher is designed for Windows. "
+            "Warning: KingdomVR Launcher is designed for Windows and macOS. "
             "Some features may not work correctly on this platform.",
             file=sys.stderr,
         )
