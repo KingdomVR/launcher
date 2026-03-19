@@ -33,7 +33,7 @@ GITHUB_API_BASE = "https://api.github.com"
 APP_NAME = "KingdomVR"
 GAME_EXE = "kingdomvr.exe"
 GAME_APP = "KingdomVR.app"
-LAUNCHER_VERSION = "1.2"
+LAUNCHER_VERSION = "1.3"
 
 IS_WINDOWS = sys.platform == "win32"
 IS_MACOS = sys.platform == "darwin"
