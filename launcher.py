@@ -371,7 +371,7 @@ class LauncherApp(tk.Tk):
             try:
                 from AppKit import NSApp, NSImage, NSURL
 
-                def _apply_cocoa_icon():
+                def _apply_cocoa_icon(retries: int = 10) -> None:
                     try:
                         img = NSImage.alloc().initByReferencingFile_(str(icon_path))
                         if img is not None:
@@ -380,25 +380,38 @@ class LauncherApp(tk.Tk):
                             except Exception:
                                 pass
 
-                        # If running from a .app bundle, set the window represented URL
-                        # to the bundle so the titlebar shows the app icon instead of a preview.
+                        # Wait for a Cocoa window to exist, retrying a few times.
+                        win = NSApp.mainWindow()
+                        if win is None:
+                            if retries > 0:
+                                try:
+                                    self.after(100, lambda: _apply_cocoa_icon(retries - 1))
+                                except Exception:
+                                    pass
+                            return
+
+                        # Clear any represented URL so the proxy/preview icon isn't shown.
                         try:
-                            bundle = get_current_macos_app_bundle()
-                            if bundle is not None:
-                                win = NSApp.mainWindow()
-                                if win is not None:
-                                    url = NSURL.fileURLWithPath_(str(bundle))
-                                    try:
-                                        win.setRepresentedURL_(url)
-                                    except Exception:
-                                        pass
+                            win.setRepresentedURL_(None)
+                        except Exception:
+                            pass
+
+                        # Try to set the small document icon button image directly.
+                        try:
+                            # NSWindow's document icon button index is used directly (4).
+                            btn = win.standardWindowButton_(4)
+                            if btn is not None:
+                                try:
+                                    btn.setImage_(img)
+                                except Exception:
+                                    pass
                         except Exception:
                             pass
                     except Exception:
                         pass
 
                 try:
-                    self.after(0, _apply_cocoa_icon)
+                    self.after(100, _apply_cocoa_icon)
                 except Exception:
                     _apply_cocoa_icon()
             except Exception:
