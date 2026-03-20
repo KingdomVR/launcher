@@ -6,13 +6,26 @@ APP = [str(HERE / "launcher.py")]
 
 # py2app options
 OPTIONS = {
-    # Py2app prefers a .icns icon file. Convert images/kingdomvr.ico -> .icns and
-    # place it alongside this file as images/kingdomvr.icns for the icon to work.
+    # py2app prefers a .icns icon file. Convert images/kingdomvr.ico -> .icns
+    # and place it as images/kingdomvr.icns for the icon to work.
     "iconfile": str(HERE / "images" / "kingdomvr.icns"),
     "resources": [str(HERE / "images")],
     "argv_emulation": False,
-    "packages": ["requests"],
+    "packages": ["requests", "PIL"],
     "includes": ["tkinter"],
+    # Exclude large / unrelated site-packages which py2app's autodetection
+    # may pull in (PyInstaller hooks, Qt, numpy/scipy tests, etc.) and which
+    # caused the ImportError in your traceback.
+    "excludes": [
+        "PyInstaller",
+        "PySide2",
+        "PySide6",
+        "PyQt5",
+        "PyQt6",
+        "numpy",
+        "scipy",
+        "matplotlib",
+    ],
     "plist": {
         "CFBundleName": "kingdomvr",
         "CFBundleDisplayName": "kingdomvr",
