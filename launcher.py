@@ -288,6 +288,23 @@ def extract_zip(zip_path: Path, dest_dir: Path) -> None:
     with zipfile.ZipFile(zip_path, "r") as zf:
         zf.extractall(dest_dir)
 
+        # On macOS, Python's zip extraction can drop Unix mode bits.
+        # Re-apply modes from the archive so nested helper binaries/frameworks
+        # (e.g. CEF components) keep executable permissions.
+        if IS_MACOS:
+            for info in zf.infolist():
+                mode = (info.external_attr >> 16) & 0o7777
+                if not mode:
+                    continue
+
+                target = dest_dir / info.filename
+                if target.exists() and not target.is_dir():
+                    try:
+                        os.chmod(target, mode)
+                    except OSError:
+                        # Best-effort permission restoration.
+                        pass
+
 
 # ── Logo Canvas ───────────────────────────────────────────────────────────────
 
@@ -883,20 +900,6 @@ class LauncherApp(tk.Tk):
 
             version_dir = VERSIONS_DIR / tag
             extract_zip(zip_dest, version_dir)
-
-            # Ensure macOS bundle binaries are executable after extraction
-            if IS_MACOS:
-                try:
-                    for app_path in version_dir.rglob("*.app"):
-                        exe_path = app_path / "Contents" / "MacOS" / "gui_client"
-                        if exe_path.exists():
-                            try:
-                                os.chmod(str(exe_path), 0o755)
-                            except Exception:
-                                # Best-effort chmod; ignore failures
-                                pass
-                except Exception:
-                    pass
 
             # Clean up the downloaded zip
             try:
