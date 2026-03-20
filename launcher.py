@@ -303,19 +303,20 @@ def build_logo_canvas(parent: tk.Widget) -> tk.Canvas:
 
     # Load and display the logo image
     try:
-        logo_path = get_resource_path("images/kingdomvr.ico")
+        icon_name = "images/kingdomvr.icns" if IS_MACOS else "images/kingdomvr.ico"
+        logo_path = get_resource_path(icon_name)
         img = Image.open(logo_path)
         # Resize if needed (keeping aspect ratio)
         img.thumbnail((120, 120), Image.Resampling.LANCZOS)
         photo = ImageTk.PhotoImage(img)
-        
+
         # Keep a reference to prevent garbage collection
         canvas.image = photo
-        
+
         # Center the image
         cx = WINDOW_W // 2
         canvas.create_image(cx, 60, image=photo)
-        
+
         # "KingdomVR" text below the logo
         canvas.create_text(
             cx, 128,
@@ -352,12 +353,16 @@ class LauncherApp(tk.Tk):
         self.configure(bg=BG_DARK)
         self.geometry(f"{WINDOW_W}x{WINDOW_H}")
         
-        # Set window icon
+        # Set window icon (use .icns on macOS, .ico elsewhere)
         try:
-            icon_path = get_resource_path("images/kingdomvr.ico")
-            self.iconbitmap(str(icon_path))
+            icon_name = "images/kingdomvr.icns" if IS_MACOS else "images/kingdomvr.ico"
+            icon_path = get_resource_path(icon_name)
+            try:
+                self.iconbitmap(str(icon_path))
+            except Exception:
+                pass  # Silently fail if icon can't be loaded or unsupported
         except Exception:
-            pass  # Silently fail if icon can't be loaded
+            pass  # Silently fail if resource lookup fails
         
         # Enable dark mode title bar on Windows 10/11
         if IS_WINDOWS:
@@ -826,6 +831,20 @@ class LauncherApp(tk.Tk):
             version_dir = VERSIONS_DIR / tag
             extract_zip(zip_dest, version_dir)
 
+            # Ensure macOS bundle binaries are executable after extraction
+            if IS_MACOS:
+                try:
+                    for app_path in version_dir.rglob("*.app"):
+                        exe_path = app_path / "Contents" / "MacOS" / "gui_client"
+                        if exe_path.exists():
+                            try:
+                                os.chmod(str(exe_path), 0o755)
+                            except Exception:
+                                # Best-effort chmod; ignore failures
+                                pass
+                except Exception:
+                    pass
+
             # Clean up the downloaded zip
             try:
                 zip_dest.unlink()
@@ -960,8 +979,12 @@ class LauncherApp(tk.Tk):
 
         # Set same icon as main window so the Toplevel shows the correct mini-icon
         try:
-            icon_path = get_resource_path("images/kingdomvr.ico")
-            about.iconbitmap(str(icon_path))
+            icon_name = "images/kingdomvr.icns" if IS_MACOS else "images/kingdomvr.ico"
+            icon_path = get_resource_path(icon_name)
+            try:
+                about.iconbitmap(str(icon_path))
+            except Exception:
+                pass
         except Exception:
             pass
 
