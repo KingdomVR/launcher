@@ -363,6 +363,46 @@ class LauncherApp(tk.Tk):
                 pass  # Silently fail if icon can't be loaded or unsupported
         except Exception:
             pass  # Silently fail if resource lookup fails
+
+        # On macOS, try to set the Cocoa application icon and the window's represented URL
+        # so the small titlebar icon matches the .icns. This uses pyobjc if available
+        # and is best-effort (fails silently if pyobjc isn't installed).
+        if IS_MACOS:
+            try:
+                from AppKit import NSApp, NSImage, NSURL
+
+                def _apply_cocoa_icon():
+                    try:
+                        img = NSImage.alloc().initByReferencingFile_(str(icon_path))
+                        if img is not None:
+                            try:
+                                NSApp.setApplicationIconImage_(img)
+                            except Exception:
+                                pass
+
+                        # If running from a .app bundle, set the window represented URL
+                        # to the bundle so the titlebar shows the app icon instead of a preview.
+                        try:
+                            bundle = get_current_macos_app_bundle()
+                            if bundle is not None:
+                                win = NSApp.mainWindow()
+                                if win is not None:
+                                    url = NSURL.fileURLWithPath_(str(bundle))
+                                    try:
+                                        win.setRepresentedURL_(url)
+                                    except Exception:
+                                        pass
+                        except Exception:
+                            pass
+                    except Exception:
+                        pass
+
+                try:
+                    self.after(0, _apply_cocoa_icon)
+                except Exception:
+                    _apply_cocoa_icon()
+            except Exception:
+                pass
         
         # Enable dark mode title bar on Windows 10/11
         if IS_WINDOWS:
